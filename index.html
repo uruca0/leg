@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>神経衰弱</title>
+<style>
+:root{--bg:#f3efe6;--surface:#fffdf8;--ink:#2b2a33;--muted:#6d6a78;--line:#d9d3c3;--back:#2f5d62;--back2:#264c50;--accent:#e0a526;--ok:#3f8f5a}
+@media (prefers-color-scheme:dark){:root{--bg:#1b1c22;--surface:#25262e;--ink:#f0eee8;--muted:#a3a0b0;--line:#3a3b46;--back:#3d7a80;--back2:#326a70;--accent:#f0b93a;--ok:#5fb77b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Hiragino Sans","Noto Sans JP","Yu Gothic",system-ui,sans-serif;line-height:1.6;padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0)}
+main{max-width:760px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:1.5rem;margin:0 0 12px}
+.stats{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:12px;font-weight:700}
+.stats small{font-weight:400;color:var(--muted);margin-right:4px}
+.board{display:grid;gap:10px;grid-template-columns:repeat(var(--cols,4),1fr)}
+.card{aspect-ratio:1;perspective:700px;border:0;padding:0;background:none;cursor:pointer}
+.inner{position:relative;width:100%;height:100%;transition:transform .45s;transform-style:preserve-3d}
+.card.open .inner,.card.done .inner{transform:rotateY(180deg)}
+.face{position:absolute;inset:0;border-radius:12px;backface-visibility:hidden;overflow:hidden}
+.front{background:repeating-linear-gradient(45deg,var(--back) 0 10px,var(--back2) 10px 20px);border:2px solid var(--back2);display:grid;place-items:center;color:rgba(255,255,255,.7);font-size:1.6rem}
+.rear{transform:rotateY(180deg);background:var(--surface);border:2px solid var(--line)}
+.rear img{width:100%;height:100%;object-fit:cover;display:block}
+.card.done .rear{border-color:var(--ok);box-shadow:0 0 0 2px var(--ok)}
+.card:focus-visible,button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.btn{font:inherit;font-weight:700;border:0;border-radius:10px;padding:10px 18px;cursor:pointer;background:var(--back);color:#fff;margin-top:14px}
+.win{text-align:center;padding:18px;border-radius:14px;background:var(--accent);color:#2b2a33;font-weight:700;margin-top:16px}
+.win p{margin:4px 0 12px;font-weight:400}
+.err{padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+[hidden]{display:none!important}
+@media (prefers-reduced-motion:reduce){.inner{transition:none}}
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title"></h1>
+  <div id="err" class="err" hidden></div>
+  <section id="game" hidden>
+    <div class="stats">
+      <span><small>めくった回数</small><b id="moves">0</b></span>
+      <span><small>そろった組</small><b id="pairs">0</b> / <b id="total">0</b></span>
+      <span><small>時間</small><b id="time">0:00</b></span>
+    </div>
+    <div class="board" id="board"></div>
+    <div class="win" id="win" hidden>
+      <div>全部そろいました!</div>
+      <p id="winText"></p>
+    </div>
+    <button class="btn" id="restart">シャッフルしてやり直す</button>
+  </section>
+</main>
+
+<script>
+/* ===== ここを編集して設定します ===== */
+const TITLE = "神経衰弱";           // ページの見出し
+const IMAGES = [                    // images フォルダに入れた画像のファイル名
+  "images/01.jpg",
+  "images/02.jpg",
+  "images/03.jpg",
+  "images/04.jpg",
+  "images/05.jpg",
+  "images/06.jpg"
+];
+const PAIRS_PER_GAME = 0;           // 1回に使う組数(0なら全部使う。画像が多い時にランダムで絞れます)
+/* ===================================== */
+
+(function(){
+  var $ = function(id){ return document.getElementById(id); };
+  var board=$('board'), win=$('win');
+  var first=null, lock=false, moves=0, matched=0, total=0, t0=0, timer=null, usable=[];
+  document.title = TITLE; $('title').textContent = TITLE;
+
+  function shuffle(a){ for(var i=a.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=a[i];a[i]=a[j];a[j]=t; } return a; }
+  function fmt(s){ return Math.floor(s/60)+':'+('0'+(s%60)).slice(-2); }
+
+  // 読み込める画像だけを使う
+  function check(list){
+    return Promise.all(list.map(function(src){
+      return new Promise(function(res){
+        var i=new Image(); i.onload=function(){res({src:src,ok:true})}; i.onerror=function(){res({src:src,ok:false})}; i.src=src;
+      });
+    }));
+  }
+
+  function start(){
+    var pool = shuffle(usable.slice());
+    if(PAIRS_PER_GAME>0) pool = pool.slice(0,PAIRS_PER_GAME);
+    var deck=[]; pool.forEach(function(s,i){ deck.push({id:i,src:s}); deck.push({id:i,src:s}); });
+    shuffle(deck);
+    total=pool.length; matched=0; moves=0; first=null; lock=false; t0=0;
+    $('moves').textContent=0; $('pairs').textContent=0; $('total').textContent=total; $('time').textContent='0:00';
+    win.hidden=true;
+    var n=deck.length, cols = n<=6?3 : n<=12?4 : n<=20?5 : 6;
+    if(window.innerWidth<420 && n>12) cols=4;
+    board.style.setProperty('--cols',cols); board.innerHTML='';
+    deck.forEach(function(d){
+      var c=document.createElement('button'); c.type='button'; c.className='card'; c.dataset.id=d.id;
+      c.setAttribute('aria-label','伏せたカード');
+      c.innerHTML='<div class="inner"><div class="face front">?</div><div class="face rear"><img alt=""></div></div>';
+      c.querySelector('img').src=d.src;
+      c.addEventListener('click',function(){ flip(c); });
+      board.appendChild(c);
+    });
+    clearInterval(timer);
+    timer=setInterval(function(){ if(t0) $('time').textContent=fmt(Math.floor((Date.now()-t0)/1000)); },500);
+  }
+
+  function flip(c){
+    if(lock||c.classList.contains('open')||c.classList.contains('done')) return;
+    if(!t0) t0=Date.now();
+    c.classList.add('open');
+    if(!first){ first=c; return; }
+    var second=c, a=first; moves++; $('moves').textContent=moves; lock=true;
+    if(a.dataset.id===second.dataset.id){
+      a.classList.replace('open','done'); second.classList.replace('open','done');
+      a.disabled=second.disabled=true; matched++; $('pairs').textContent=matched; first=null; lock=false;
+      if(matched===total){ clearInterval(timer); $('winText').textContent=moves+'回・'+fmt(Math.floor((Date.now()-t0)/1000))+'でクリア'; win.hidden=false; }
+    } else {
+      setTimeout(function(){ a.classList.remove('open'); second.classList.remove('open'); first=null; lock=false; },900);
+    }
+  }
+
+  $('restart').onclick=start;
+  check(IMAGES).then(function(r){
+    usable=r.filter(function(x){return x.ok}).map(function(x){return x.src});
+    var bad=r.filter(function(x){return !x.ok}).map(function(x){return x.src});
+    if(usable.length<2){
+      var e=$('err'); e.hidden=false;
+      e.textContent='画像が2枚以上読み込めませんでした。images フォルダの画像と、index.html の IMAGES のファイル名(大文字・小文字も含む)が一致しているか確認してください。';
+      return;
+    }
+    if(bad.length){ console.warn('読み込めなかった画像:', bad); }
+    $('game').hidden=false; start();
+  });
+})();
+</script>
+</body>
+</html>
